@@ -94,7 +94,7 @@ namespace Jimara {
 						if (error) return true;
 						if (m_allFilesRelative.find(relativePath) != m_allFilesRelative.end()) return true;
 						m_allFilesRelative.insert(relativePath);
-						onRelPathFound(std::move(relativePath));
+						onRelPathFound((const Path&)relativePath);
 					}
 					{
 						std::error_code error;
@@ -205,7 +205,7 @@ namespace Jimara {
 				inline DirectoryListener(const Path& absPath, const Path& alias, OS::Logger* log) : m_absolutePath(absPath), m_mainAlias(absPath), m_logger(log) {
 					AddAlias(alias);
 					Path::IterateDirectory(absPath, [&](const Path& subPath) {
-						return FindAllFiles(subPath, [&](Path&&) {});
+						return FindAllFiles(subPath, [&](const Path&) {});
 					}, Path::IterateDirectoryFlags::REPORT_ALL);
 				}
 
@@ -293,7 +293,7 @@ namespace Jimara {
 								};
 								auto newFileFound = [&]() {
 									Path::IterateDirectory(m_absolutePath / update.filePath, [&](const Path& subPath) {
-										return FindAllFiles(subPath, [&](Path&& relPath) {
+										return FindAllFiles(subPath, [&](const Path& relPath) {
 											const Path parentPath = relPath.parent_path();
 											if ((!parentPath.empty()) && parentPath != relPath)
 												m_filesPerFolder[parentPath].insert(relPath);
