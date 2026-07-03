@@ -14,54 +14,10 @@
 #include <sys/inotify.h>
 #endif
 
-
-#if defined(__APPLE__)
 namespace Jimara {
 	namespace OS {
 		namespace {
-			class NullDirectoryChangeObserver final : public virtual DirectoryChangeObserver {
-			private:
-				mutable EventInstance<const FileChangeInfo&> m_onFileChanged;
-
-			public:
-				inline NullDirectoryChangeObserver(const Path& directory, Logger* logger)
-					: DirectoryChangeObserver(directory, logger) {}
-
-				inline virtual Event<const FileChangeInfo&>& OnFileChanged()const override {
-					return m_onFileChanged;
-				}
-			};
-		}
-
-		Reference<DirectoryChangeObserver> DirectoryChangeObserver::Create(const Path& directory, OS::Logger* logger, bool) {
-			assert(logger != nullptr);
-			logger->Warning("DirectoryChangeObserver is not implemented on macOS yet. Directory: '", directory, "'.");
-			return Object::Instantiate<NullDirectoryChangeObserver>(directory, logger);
-		}
-
-		std::ostream& operator<<(std::ostream& stream, const DirectoryChangeObserver::FileChangeType& type) {
-			stream << (
-				(type == DirectoryChangeObserver::FileChangeType::NO_OP) ? "NO_OP" :
-				(type == DirectoryChangeObserver::FileChangeType::CREATED) ? "CREATED" :
-				(type == DirectoryChangeObserver::FileChangeType::DELETED) ? "DELETED" :
-				(type == DirectoryChangeObserver::FileChangeType::RENAMED) ? "RENAMED" :
-				(type == DirectoryChangeObserver::FileChangeType::MODIFIED) ? "MODIFIED" :
-				(type == DirectoryChangeObserver::FileChangeType::FileChangeType_COUNT) ? "FileChangeType_COUNT" : "<ERROR_TYPE>");
-			return stream;
-		}
-
-		std::ostream& operator<<(std::ostream& stream, const DirectoryChangeObserver::FileChangeInfo& info) {
-			stream << "DirectoryChangeObserver::FileChangeInfo {changeType: " << info.changeType << "; filePath: '" << info.filePath << "'";
-			if (info.oldPath.has_value()) stream << "; oldPath: '" << info.oldPath.value() << "'";
-			stream << "; observer: " << info.observer << "}";
-			return stream;
-		}
-	}
-}
-#else
-namespace Jimara {
-	namespace OS {
-		namespace {
+#pragma region DirectoryListener_Windows
 #ifdef _WIN32
 			class DirectoryListener : public virtual Object {
 			public:
@@ -474,10 +430,15 @@ namespace Jimara {
 						it->second->Refresh(0, emitResult);
 				}
 			};
+#endif
+#pragma endregion
 
 
 
-#else
+
+
+#pragma region DirectoryListener_Linux
+#ifdef __linux__
 			inline static constexpr int NoFd() { return -1; }
 
 			class InotifyInstance;
@@ -575,9 +536,30 @@ namespace Jimara {
 					else return Object::Instantiate<DirectoryListener>(path, watch);
 				}
 			};
-
-
 #endif
+#pragma endregion
+
+
+
+
+
+#pragma region DirChangeWatcher_MacOS
+#ifdef __APPLE__
+			class DirectoryListener : public virtual Object {
+			private:
+				const Path m_directoryPath;
+				const Reference<OS::Logger> m_log;
+
+			public:
+				inline DirectoryListener(const Path& path, OS::Logger* log) : m_directoryPath(path), m_log(log) {}
+				inline virtual ~DirectoryListener() {}
+				inline const Path& Directory()const { return m_directoryPath; }
+				inline OS::Logger* Log()const { return m_log; }
+			};
+#endif
+#pragma endregion
+
+
 
 
 
@@ -604,7 +586,8 @@ namespace Jimara {
 				inline void Notify() {
 					{
 						std::unique_lock<std::mutex> lock(m_eventQueueLock);
-						while (m_events.empty() && (!m_dead)) m_eventQueueCondition.wait(lock);
+						while (m_events.empty() && (!m_dead)) 
+							m_eventQueueCondition.wait(lock);
 						std::swap(m_events, m_eventBuffer);
 					}
 					for (size_t i = 0; i < m_eventBuffer.size(); i++)
@@ -641,7 +624,7 @@ namespace Jimara {
 				Reference<DirectoryListener> m_rootListener;
 #ifdef _WIN32
 				SymlinkOverlaps m_symlinkListeners;
-#else
+#elif defined(__linux__)
 				alignas(struct inotify_event) char m_readBuffer[1 << 20] = {}; // Excessive? Probably yes, but I don't care...
 				size_t m_bytesRead = 0;
 				
@@ -919,6 +902,11 @@ namespace Jimara {
 			};
 #pragma warning(default: 4250)
 
+
+
+
+
+#pragma region DirChangeWatcher_Windows
 #ifdef _WIN32
 			inline void DirChangeWatcher::Poll() {
 				std::vector<Path> removedLinks;
@@ -1026,10 +1014,15 @@ namespace Jimara {
 					return watcher;
 				}
 			}
+#endif
+#pragma endregion
 
 
 
-#else
+
+
+#pragma region DirChangeWatcher_Linux
+#ifdef __linux__
 			inline void DirChangeWatcher::Poll() {
 				auto changeDetected = [&](FileChangeInfo&& changeInfo) {
 					ModifiedNoCloseUpdate(changeInfo);
@@ -1183,6 +1176,40 @@ namespace Jimara {
 				}
 			}
 #endif
+#pragma endregion
+
+
+
+
+
+#pragma region DirChangeWatcher_MacOS
+#ifdef __APPLE__
+			inline void DirChangeWatcher::Poll() {
+				// __TODO__: Implement this!
+			}
+
+			inline DirChangeWatcher::DirChangeWatcher(DirectoryListener* rootListener) 
+				: DirectoryChangeObserver(rootListener->Directory(), rootListener->Log()), m_rootListener(rootListener) {
+				// __TODO__: Implement this!
+			}
+
+			inline DirChangeWatcher::~DirChangeWatcher() {
+				// __TODO__: Implement this!
+			}
+
+			inline Reference<DirChangeWatcher> DirChangeWatcher::Open(const Path& directory, OS::Logger* logger) {
+				// __TODO__: Implement this!
+				const Reference<DirectoryListener> baseListener = Object::Instantiate<DirectoryListener>(directory, logger);
+				Reference<DirChangeWatcher> watcher = new DirChangeWatcher(baseListener);
+				watcher->ReleaseRef();
+				return watcher;
+			}
+#endif
+#pragma endregion
+
+
+
+
 
 			class DirChangeWatcherCache : ObjectCache<Path> {
 			public:
@@ -1221,4 +1248,3 @@ namespace Jimara {
 		}
 	}
 }
-#endif
