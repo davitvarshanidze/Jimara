@@ -13,6 +13,9 @@
 #include <unistd.h>
 #include <sys/inotify.h>
 #endif
+#ifdef __APPLE__
+#include <CoreServices/CoreServices.h>
+#endif
 
 namespace Jimara {
 	namespace OS {
@@ -544,17 +547,149 @@ namespace Jimara {
 
 
 #pragma region DirChangeWatcher_MacOS
-#ifdef __APPLE__
+#if defined(__APPLE__)
 			class DirectoryListener : public virtual Object {
+			public:
+				using ChangeType = DirectoryChangeObserver::FileChangeType;
+				struct ChangeInfo {
+					std::string filename;
+					std::string oldFileName;
+					ChangeType changeType;
+				};
+
 			private:
 				const Path m_directoryPath;
 				const Reference<OS::Logger> m_log;
+				FSEventStreamRef m_stream = nullptr;
+				CFRunLoopRef m_runLoop = nullptr;
+
+				using OnFileChangedCallback = Jimara::Callback<const ChangeInfo&>;
+				OnFileChangedCallback m_onFileChanged = OnFileChangedCallback(Unused<const ChangeInfo&>);
+
+				static void Callback(
+					ConstFSEventStreamRef,
+					void* clientCallBackInfo,
+					size_t numEvents,
+					void* eventPaths,
+					const FSEventStreamEventFlags eventFlags[],
+					const FSEventStreamEventId[]) {
+
+					auto* self = static_cast<DirectoryListener*>(clientCallBackInfo);
+					char** paths = static_cast<char**>(eventPaths);
+
+					for (size_t i = 0; i < numEvents; i++)
+					{
+						ChangeInfo info = {};
+						info.filename = paths[i];
+						const FSEventStreamEventFlags flags = eventFlags[i];
+
+						if (flags & kFSEventStreamEventFlagItemCreated) {
+							info.changeType = decltype(info.changeType)::CREATED;
+							self->m_onFileChanged(info);
+						}
+						if (flags & kFSEventStreamEventFlagItemRemoved) {
+							info.changeType = decltype(info.changeType)::DELETED;
+							self->m_onFileChanged(info);
+						}
+						if (flags & kFSEventStreamEventFlagItemModified) {
+							info.changeType = decltype(info.changeType)::MODIFIED;
+							self->m_onFileChanged(info);
+						}
+						if (flags & kFSEventStreamEventFlagItemRenamed) {
+							info.changeType = decltype(info.changeType)::RENAMED;
+							self->m_onFileChanged(info);
+						}
+					}
+				}
 
 			public:
 				inline DirectoryListener(const Path& path, OS::Logger* log) : m_directoryPath(path), m_log(log) {}
-				inline virtual ~DirectoryListener() {}
+				inline virtual ~DirectoryListener() {
+					assert(m_runLoop == nullptr);
+					Stop();
+				}
+
 				inline const Path& Directory()const { return m_directoryPath; }
 				inline OS::Logger* Log()const { return m_log; }
+				
+				inline bool Start(const OnFileChangedCallback& onFileChanged) {
+					m_onFileChanged = onFileChanged;
+					m_runLoop = CFRunLoopGetCurrent();
+					const std::string directory = m_directoryPath.string();
+
+					auto fail = [&](const auto... message) {
+						Log()->Error("(DirectoryChangeWatcher::)DirectoryListener::Start - ", message...);
+						return false;
+					};
+
+					CFStringRef path = CFStringCreateWithCString(
+						nullptr,
+						directory.c_str(),
+						kCFStringEncodingUTF8);
+					if (path == nullptr)
+						return fail("Failed to create path with CFStringCreateWithCString! [File: ", __FILE__, "; Line: ", __LINE__, "]");
+
+					CFArrayRef paths = CFArrayCreate(
+						nullptr,
+						(const void**)&path,
+						1,
+						&kCFTypeArrayCallBacks);
+					if (paths == nullptr) {
+						CFRelease(path);
+						return fail("Failed to create path array CFArrayCreate! [File: ", __FILE__, "; Line: ", __LINE__, "]");
+					}
+
+					FSEventStreamContext ctx{};
+					ctx.info = this;
+
+					m_stream = FSEventStreamCreate(
+						nullptr,
+						&DirectoryListener::Callback,
+						&ctx,
+						paths,
+						kFSEventStreamEventIdSinceNow,
+						0.25,
+						kFSEventStreamCreateFlagFileEvents);
+
+					CFRelease(paths);
+					if (m_stream == nullptr) {
+						CFRelease(path);
+						return fail("Failed to create stream with FSEventStreamCreate! [File: ", __FILE__, "; Line: ", __LINE__, "]");
+					}
+
+					FSEventStreamScheduleWithRunLoop(
+						m_stream,
+						m_runLoop,
+						kCFRunLoopDefaultMode);
+
+					bool success = FSEventStreamStart(m_stream);
+
+					CFRelease(path);
+
+					if (!success)
+						return fail("Failed to start stream with FSEventStreamStart! [File: ", __FILE__, "; Line: ", __LINE__, "]");
+					return success;
+				}
+
+				inline void RunLoop() {
+					CFRunLoopRun();
+				}
+
+				inline void Stop() {
+					if (m_stream)
+					{
+						FSEventStreamStop(m_stream);
+						FSEventStreamInvalidate(m_stream);
+						FSEventStreamRelease(m_stream);
+						m_stream = nullptr;
+					}
+
+					if (m_runLoop)
+					{
+						CFRunLoopStop(m_runLoop);
+						m_runLoop = nullptr;
+					}
+				}
 			};
 #endif
 #pragma endregion
@@ -604,9 +739,31 @@ namespace Jimara {
 							firstCycleComplete->post();
 						while (!dead->load()) update();
 					};
-					Semaphore firstCycleComplete;
-					m_pollingThread = std::thread(thread, Callback<>(&DirChangeWatcher::Poll, this), &m_dead, &firstCycleComplete);
 					m_notifyThread = std::thread(thread, Callback<>(&DirChangeWatcher::Notify, this), &m_dead, nullptr);
+					Semaphore firstCycleComplete;
+#if !defined(__APPLE__)
+					m_pollingThread = std::thread(thread, Callback<>(&DirChangeWatcher::Poll, this), &m_dead, &firstCycleComplete);
+#else
+					static void(*pollingThread)(DirChangeWatcher*, Semaphore*) = [](DirChangeWatcher* self, Semaphore* firstCycleComplete) {
+						static auto notify = [&](const DirectoryListener::ChangeInfo& info) {
+							FileChangeInfo evt = {};
+							evt.filePath = Path(info.filename);
+							if (info.oldFileName.length() > 0u)
+								evt.oldPath = Path(info.oldFileName);
+							evt.changeType = info.changeType;
+							evt.observer = self;
+							self->QueueEvent(std::move(evt));
+						};
+						const bool success = self->m_rootListener->Start(Callback<const DirectoryListener::ChangeInfo&>::FromCall(&notify));
+						if (firstCycleComplete != nullptr)
+							firstCycleComplete->post();
+						if (success) {
+							self->m_rootListener->RunLoop();
+						}
+					};
+
+					m_pollingThread = std::thread(pollingThread, this, &firstCycleComplete);
+#endif
 					firstCycleComplete.wait();
 				}
 
@@ -617,6 +774,9 @@ namespace Jimara {
 						m_dead = true;
 						m_eventQueueCondition.notify_all();
 					}
+#if defined(__APPLE__)
+					m_rootListener->Stop();
+#endif
 					m_pollingThread.join();
 					m_notifyThread.join();
 				}
@@ -1191,10 +1351,13 @@ namespace Jimara {
 			inline DirChangeWatcher::DirChangeWatcher(DirectoryListener* rootListener) 
 				: DirectoryChangeObserver(rootListener->Directory(), rootListener->Log()), m_rootListener(rootListener) {
 				// __TODO__: Implement this!
+				StartThreads();
 			}
 
 			inline DirChangeWatcher::~DirChangeWatcher() {
 				// __TODO__: Implement this!
+				KillThreads();
+				m_rootListener = nullptr;
 			}
 
 			inline Reference<DirChangeWatcher> DirChangeWatcher::Open(const Path& directory, OS::Logger* logger) {
