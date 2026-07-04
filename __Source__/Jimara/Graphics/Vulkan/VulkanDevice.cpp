@@ -227,11 +227,13 @@ namespace Jimara {
 					createInfo.enabledExtensionCount = static_cast<uint32_t>(m_deviceExtensions.size());
 					createInfo.ppEnabledExtensionNames = (m_deviceExtensions.size() > 0 ? m_deviceExtensions.data() : nullptr);
 				}
+#if false // Device level layers have been depricated, apparently.
 				{
 					createInfo.enabledLayerCount = static_cast<uint32_t>(dynamic_cast<VulkanInstance*>(m_physicalDevice->GraphicsInstance())->ActiveValidationLayers().size());
 					createInfo.ppEnabledLayerNames = dynamic_cast<VulkanInstance*>(m_physicalDevice->GraphicsInstance())->ActiveValidationLayers().size() > 0
 						? dynamic_cast<VulkanInstance*>(m_physicalDevice->GraphicsInstance())->ActiveValidationLayers().data() : nullptr;
 				}
+#endif
 				if (vkCreateDevice(*m_physicalDevice, &createInfo, nullptr, &m_device) != VK_SUCCESS) {
 					m_device = VK_NULL_HANDLE;
 					m_physicalDevice->Log()->Fatal("VulkanDevice - Failed to create logical device");
