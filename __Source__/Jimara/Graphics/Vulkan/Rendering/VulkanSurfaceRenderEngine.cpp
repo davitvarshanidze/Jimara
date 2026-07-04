@@ -85,7 +85,7 @@ namespace Jimara {
 				{
 					// Transition to shader read only optimal layout
 					VulkanImage* const image = m_swapChain->Image(imageId);
-					image->TransitionLayout(commandBuffer, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, image->ShaderAccessLayout(), 0, 1, 0, 1);
+					image->TransitionLayout(commandBuffer, VK_IMAGE_LAYOUT_UNDEFINED, image->ShaderAccessLayout(), 0, 1, 0, 1);
 
 					// Let all underlying renderers record their commands
 					const InFlightBufferInfo BUFFER_INFO(commandBuffer, imageId);
@@ -174,6 +174,7 @@ namespace Jimara {
 				else for (size_t i = 0u; i < m_swapChain->ImageCount(); i++)
 					m_swapChainImages.push_back(m_swapChain->Image(i));
 
+#if false // The Vulkan spec states: Use of a presentable image must occur only after the image is returned by vkAcquireNextImageKHR, and before it is released by vkQueuePresentKHR. This includes transitioning the image layout and rendering commands
 				// Let us make sure the swap chain images have VK_IMAGE_LAYOUT_PRESENT_SRC_KHR layout in case no attached renderer bothers to make proper changes
 				m_commandPool->SubmitSingleTimeCommandBuffer([&](VkCommandBuffer buffer) {
 					static thread_local std::vector<VkImageMemoryBarrier> transitions;
@@ -191,6 +192,7 @@ namespace Jimara {
 						static_cast<uint32_t>(transitions.size()), transitions.data()
 					);
 					});
+#endif
 
 				const size_t maxFramesInFlight = min(MAX_FRAMES_IN_FLIGHT, m_swapChain->ImageCount());
 				m_freeSemaphores.clear();
