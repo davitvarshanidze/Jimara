@@ -82,7 +82,7 @@ def jimara_initialize():
 		make_symlinc("__Source__/Jimara-Tests", "Project/Windows/MSVS2019/Jimara-Test/__SRC__")
 		
 		def link_built_in_assets(build_path):
-			platforms = ["/x64", "/Win32"]
+			platforms = ["/x64"]
 			configs = ["/Debug", "/Release"]
 			for plat in platforms:
 				for conf in configs:
