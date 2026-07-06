@@ -60,7 +60,7 @@ namespace Jimara {
 
 				// Retrieves scratch-buffer for the build commands
 				inline Reference<VulkanArrayBuffer> GetScratchBuffer(bool update)const {
-					return m_scratchBufferProvider->GetBuffer(update ? m_buildSizes.updateScratchSize : m_buildSizes.buildScratchSize);
+					return m_scratchBufferProvider->GetBuffer(static_cast<size_t>(update ? m_buildSizes.updateScratchSize : m_buildSizes.buildScratchSize));
 				}
 
 				// VulkanBottomLevelAccelerationStructure & VulkanTopLevelAccelerationStructure can access internals...
