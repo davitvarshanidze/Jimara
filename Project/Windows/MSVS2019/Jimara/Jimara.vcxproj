@@ -294,6 +294,7 @@ copy "$(ProjectDir)..\..\..\..\Jimara-ThirdParty\OpenAL\bin\Windows\$(Platform)\
     <ClCompile Include="__SRC__\Components\GraphicsObjects\GeometryRendererCullingOptions.cpp" />
     <ClCompile Include="__SRC__\Components\GraphicsObjects\ParticleRenderer.cpp" />
     <ClCompile Include="__SRC__\Components\GraphicsObjects\SkinnedMeshRenderer.cpp" />
+    <ClCompile Include="__SRC__\Components\GraphicsObjects\TerrainRenderer.cpp" />
     <ClCompile Include="__SRC__\Components\GraphicsObjects\TriMeshRenderer.cpp" />
     <ClCompile Include="__SRC__\Components\Level\ComponentRegistry.cpp" />
     <ClCompile Include="__SRC__\Components\Level\ReferenceInputFromRegistry.cpp" />
@@ -538,6 +539,7 @@ copy "$(ProjectDir)..\..\..\..\Jimara-ThirdParty\OpenAL\bin\Windows\$(Platform)\
     <ClInclude Include="__SRC__\Components\Component.h" />
     <ClInclude Include="__SRC__\Components\GraphicsObjects\GeometryRendererCullingOptions.h" />
     <ClInclude Include="__SRC__\Components\GraphicsObjects\ParticleRenderer.h" />
+    <ClInclude Include="__SRC__\Components\GraphicsObjects\TerrainRenderer.h" />
     <ClInclude Include="__SRC__\Components\GraphicsObjects\TriMeshRenderer.h" />
     <ClInclude Include="__SRC__\Components\GraphicsObjects\SkinnedMeshRenderer.h" />
     <ClInclude Include="__SRC__\Components\Level\ReferenceInputFromRegistry.h" />
