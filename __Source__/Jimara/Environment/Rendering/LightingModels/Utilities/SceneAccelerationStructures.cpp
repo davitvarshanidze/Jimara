@@ -4,9 +4,24 @@
 
 namespace Jimara {
 	struct SceneAccelerationStructures::Helpers {
-		inline static void Build(Graphics::CommandBuffer* commandBuffer, const BlasDesc& desc, Graphics::BottomLevelAccelerationStructure* blas, bool wasBuilt) {
+		using DirtyType_t = std::underlying_type_t<DirtyType>;
+
+		inline static void Build(
+			Graphics::CommandBuffer* commandBuffer, 
+			const BlasDesc& desc, 
+			Graphics::BottomLevelAccelerationStructure* blas, 
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+			std::atomic<DirtyType_t>& dirtyType,
+#endif
+			bool wasBuilt) {
+			
 			desc.displacementJob(commandBuffer, desc.displacementJobId);
-			const bool refit = (wasBuilt && ((desc.flags & Flags::REFIT_ON_REBUILD) != Flags::NONE));
+			
+			const bool refit = (
+				wasBuilt &&
+				((dirtyType.exchange((DirtyType_t)DirtyType::NONE) & ((DirtyType_t)DirtyType::NEEDS_REBUILD)) != 0) &&
+				((desc.flags & Flags::REFIT_ON_REBUILD) != Flags::NONE));
+			
 			blas->Build(commandBuffer,
 				desc.vertexBuffer, desc.vertexStride, desc.vertexPositionOffset,
 				desc.indexBuffer,
@@ -20,6 +35,9 @@ namespace Jimara {
 			BlasDesc desc;
 			Reference<Graphics::BottomLevelAccelerationStructure> blas;
 			std::shared_ptr<std::atomic_bool> initialized;
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+			mutable std::atomic<DirtyType_t> dirtyType = (DirtyType_t)DirtyType::NONE;
+#endif
 
 			inline BuildCommand(const BlasDesc& descriptor,
 				Graphics::BottomLevelAccelerationStructure* as,
@@ -46,7 +64,9 @@ namespace Jimara {
 			std::mutex m_oneTimeBuildLock;
 			std::mutex m_oneTimeBuildListLock;
 			uint8_t m_oneTimeCommandListFrontBuffer = static_cast<uint8_t>(0u);
-			std::vector<Reference<const BuildCommand>> m_oneTimeBuildCommands[2u];
+			using OneTimeBuildList = std::vector<Reference<const Object>>;
+			using OneTimeBuildQueue = std::vector<OneTimeBuildList>;
+			OneTimeBuildQueue m_oneTimeBuildCommands[2u];
 
 			std::mutex m_perFrameBuildLock;
 			std::mutex m_perFrameBuildCommandSynchLock;
@@ -54,11 +74,12 @@ namespace Jimara {
 
 			std::atomic_uint64_t m_lastBuildFrame;
 
+
 			inline void PerformOneTimeBuild(Graphics::CommandBuffer* commands) {
 				std::unique_lock<decltype(m_oneTimeBuildLock)> lock(m_oneTimeBuildLock);
 
 				// Swap buffers and obtain back buffer:
-				std::vector<Reference<const BuildCommand>>* oneTimeBuildCommands = nullptr;
+				OneTimeBuildQueue* oneTimeBuildCommands = nullptr;
 				{
 					std::unique_lock<decltype(m_oneTimeBuildListLock)> lock(m_oneTimeBuildListLock);
 					oneTimeBuildCommands = m_oneTimeBuildCommands + static_cast<size_t>(m_oneTimeCommandListFrontBuffer);
@@ -66,9 +87,20 @@ namespace Jimara {
 				}
 
 				// Build blas instances:
-				for (const Reference<const BuildCommand>& command : (*oneTimeBuildCommands))
-					if (!command->initialized->exchange(true))
-						Build(commands, command->desc, command->blas, false);
+				for (size_t listId = 0u; listId < oneTimeBuildCommands->size(); listId++) {
+					const OneTimeBuildList& buildList = oneTimeBuildCommands->data()[listId];
+					const auto end = buildList.data() + buildList.size();
+					for (auto it = buildList.data(); it < end; it++) {
+						const BuildCommand* command = dynamic_cast<const BuildCommand*>(it->operator->());
+						assert(command != nullptr);
+						if (!command->initialized->exchange(true))
+							Build(commands, command->desc, command->blas,
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+								command->dirtyType,
+#endif
+								false);
+					}
+				}
 
 				// Clear back-buffer:
 				oneTimeBuildCommands->clear();
@@ -88,7 +120,11 @@ namespace Jimara {
 				const Reference<const BuildCommand>* const end = ptr + m_perFrameBuildCommands.Size();
 				while (ptr < end) {
 					const bool wasBuilt = (*ptr)->initialized->exchange(true);
-					Build(commands, (*ptr)->desc, (*ptr)->blas, wasBuilt);
+					Build(commands, (*ptr)->desc, (*ptr)->blas, 
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+						(*ptr)->dirtyType,
+#endif
+						wasBuilt);
 					ptr++;
 				}
 			}
@@ -187,7 +223,23 @@ namespace Jimara {
 
 			inline void ScheduleOneTimeBuild(const BuildCommand* command) {
 				std::unique_lock<decltype(m_oneTimeBuildListLock)> lock(m_oneTimeBuildListLock);
-				m_oneTimeBuildCommands[m_oneTimeCommandListFrontBuffer].push_back(command);
+				OneTimeBuildQueue& queue = m_oneTimeBuildCommands[m_oneTimeCommandListFrontBuffer];
+				if (queue.empty())
+					queue.push_back({});
+				OneTimeBuildList& list = queue.back();
+				list.push_back(command);
+			}
+
+			inline void ScheduleOneTimeBuild(std::vector<Reference<const Object>>&& list) {
+				if (list.size() <= 0u)
+					return;
+				std::unique_lock<decltype(m_oneTimeBuildListLock)> lock(m_oneTimeBuildListLock);
+				OneTimeBuildQueue& queue = m_oneTimeBuildCommands[m_oneTimeCommandListFrontBuffer];
+				OneTimeBuildList& lst = queue.emplace_back();
+				assert(lst.size() == 0u);
+				std::swap(list, lst);
+				assert(lst.size() > 0u);
+				assert(list.size() == 0u);
 			}
 
 			inline void AddPerFrameBuild(const BuildCommand* command) {
@@ -215,12 +267,12 @@ namespace Jimara {
 
 			inline virtual ~BlasInstance() {
 				initialized->store(true);
-				if (buildCommand != nullptr) {
-					assert(queues != nullptr);
+				if (queues != nullptr) {
+					assert(buildCommand != nullptr);
 					queues->RemovePerFrameBuild(buildCommand);
-					buildCommand = nullptr;
 					queues = nullptr;
 				}
+				buildCommand = nullptr;
 			}
 
 			inline static Reference<BlasInstance> Create(const BlasDesc& desc, SceneContext* context, Queues* queues) {
@@ -251,14 +303,27 @@ namespace Jimara {
 				if (as == nullptr)
 					return fail("Failed to create Acceleration structure instance! [File: ", __FILE__, "; Line: ", __LINE__, "]");
 
-				// Optionally build AS if the request is urgent:
+				// Create instance:
 				const Reference<BlasInstance> instance = Object::Instantiate<BlasInstance>(as);
+
+				// For dirty-queues, we always need a 'live' build command:
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+				instance->buildCommand = Object::Instantiate<BuildCommand>(desc, instance->blas, instance->initialized);
+				assert(instance->buildCommand != nullptr);
+				instance->buildCommand->dirtyType = (DirtyType_t)DirtyType::NEEDS_REBUILD;
+#endif
+
+				// Optionally build AS if the request is urgent:
 				if ((desc.flags & Flags::INITIAL_BUILD_SCHEDULE_URGENT) != Flags::NONE) {
 					Queues::OneTimeCommandBuffer commands(queues);
 					if (commands.Buffer() == nullptr)
 						fail("Failed to create command buffer! [File: ", __FILE__, "; Line: ", __LINE__, "]");
 					else {
-						Build(commands.Buffer(), desc, instance->blas, false);
+						Build(commands.Buffer(), desc, instance->blas, 
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+							instance->buildCommand->dirtyType,
+#endif
+							false);
 						instance->initialized->store(true);
 					}
 				}
@@ -271,9 +336,11 @@ namespace Jimara {
 				// If per-frame-rebuild is required, we add to the per-frame build jobs:
 				if ((desc.flags & Flags::REBUILD_ON_EACH_FRAME) != Flags::NONE) {
 					instance->queues = queues;
-					instance->buildCommand = Object::Instantiate<BuildCommand>(desc, instance->blas, instance->initialized);
+					if (instance->buildCommand == nullptr)
+						instance->buildCommand = Object::Instantiate<BuildCommand>(desc, instance->blas, instance->initialized);
 					queues->AddPerFrameBuild(instance->buildCommand);
 				}
+				else assert(instance->queues == nullptr);
 
 				// Done:
 				return instance;
@@ -408,4 +475,32 @@ namespace Jimara {
 		const Helpers::BlasInstance* const self = Helpers::BlasInstance::Self(this);
 		return self->initialized->load() ? self->blas.operator->() : nullptr;
 	}
+
+
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+	SceneAccelerationStructures::DirtyQueue::DirtyQueue(SceneAccelerationStructures* set) : m_set(set) {
+		assert(m_set != nullptr);
+	}
+
+	SceneAccelerationStructures::DirtyQueue::~DirtyQueue() {
+		if (m_queue.empty())
+			return;
+		const Helpers::Instance* instance = Helpers::Instance::Self(m_set);
+		assert(instance != nullptr);
+		instance->queues->ScheduleOneTimeBuild(std::move(m_queue));
+		assert(m_queue.empty());
+	}
+
+	void SceneAccelerationStructures::DirtyQueue::Submit(Blas* blas, DirtyType dirty) {
+		if (blas == nullptr || dirty <= DirtyType::NONE)
+			return;
+		const Helpers::BlasInstance* const as = Helpers::BlasInstance::Self(blas);
+		assert(as != nullptr);
+		assert(as->buildCommand != nullptr);
+		const DirtyType flags = (DirtyType)as->buildCommand->dirtyType.fetch_or((Helpers::DirtyType_t)dirty);
+		// We check for queues, because if the blas is already updated on a per-frame basis, we don't have a need to enqueue:
+		if (flags == DirtyType::NONE && as->queues == nullptr)
+			m_queue.push_back(as->buildCommand);
+	}
+#endif
 }

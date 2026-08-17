@@ -1,6 +1,7 @@
 #pragma once
 #include "../../../Scene/Scene.h"
 #define JIMARA_SceneAccelerationStructures_ENABLE_BlasVariant false
+#define JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue true
 
 namespace Jimara {
 	/// <summary> Scene-wide shared BLAS collection and update manager </summary>
@@ -192,6 +193,65 @@ namespace Jimara {
 		/// <param name="desc"> Blas variant descriptor </param>
 		/// <returns> Blas variant instance </returns>
 		Reference<Blas> GetBlas(VariantDesc& desc);
+#endif
+
+
+#if JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue
+		/// <summary> 'Dirty-Flag' for the DirtyQueue </summary>
+		enum class JIMARA_API DirtyType : uint8_t {
+			/// <summary> Empty bitmask </summary>
+			NONE = 0u,
+
+			/// <summary> 
+			/// If DirtyQueue::Submit() is invoked with this flag, the system will know that the blas needs a re-fit, not a full re-buld.
+			/// <para/> Notes: 
+			/// <para/>		0. Subsequent/Parallel invokation with NEEDS_REBUILD flag will override NEEDS_REFIT request with a re-build if used during the same frame.
+			/// <para/>		1. If Flags::REFIT_ON_REBUILD is not set during BLAS creation, the instance will be fully rebuilt instead of re-fitted anyway.
+			/// </summary>
+			NEEDS_REFIT = 1u << 0,
+
+			/// <summary> 
+			/// If DirtyQueue::Submit() is invoked with this flag, the system will know that the blas needs a full re-buld.
+			/// <para/> Notes: 
+			///	<para/>		0. Invokation with NEEDS_REBUILD flag will override regit NEEDS_REFIT with a re-build if used during the same frame.
+			///	<para/>		1. NEEDS_REBUILD will also override Flags::REFIT_ON_REBUILD from blas creation-time.
+			/// </summary>
+			NEEDS_REBUILD = 1u << 1
+		};
+
+		/// <summary>
+		/// Some BLAS instances do not require rebuilds and/or refits on each frame, but may do so with certain intervals.
+		/// To make sure we don't over-examine unnecessary blas instances for dirty-flags and such, we have a dirty-queue API that lets us batch-submit
+		/// dirty-flags to the system and make sure the relevant instances are examined per-demand.
+		/// <para/> Notes: 
+		/// <para/>	0. API is designed to be thread-safe and maximally parallel under the hood;
+		/// <para/>	1. If several dirty-queues contain the same BLAS reference, that will be taken into account and the BLAS will be re-fitted and/or re-built only once;
+		/// <para/>	2. Once the BLAS handle winds up in any dirty-queue, it will be guaranteed to be re-fitted and/or re-built on the next update job,
+		///		so if the use-case depends on the frame-consistency, the queues should be constructed either within simulation jobs, 
+		///		or as part of manual build dependencies (OnCollectBuildDependencies()).
+		/// </summary>
+		class JIMARA_API DirtyQueue final {
+		public:
+			/// <summary>
+			/// Constructor
+			/// </summary>
+			/// <param name="set"> Acceleration structure set </param>
+			DirtyQueue(SceneAccelerationStructures* set);
+
+			/// <summary> Destructor </summary>
+			~DirtyQueue();
+
+			/// <summary>
+			/// Adds given blas to dirty list for the next rebuild/refit cycle.
+			/// </summary>
+			/// <param name="blas"> Bottom-Level acceleration structure </param>
+			/// <param name="dirty"> Dirty-flag </param>
+			void Submit(Blas* blas, DirtyType dirty);
+
+		private:
+			const Reference<SceneAccelerationStructures> m_set;
+			std::vector<Reference<const Object>> m_queue;
+		};
 #endif
 
 
