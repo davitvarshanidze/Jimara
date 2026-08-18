@@ -26,6 +26,12 @@ namespace Jimara {
 		/// <summary> Information about active/live instances </summary>
 		struct InstanceInfo;
 
+		/// <summary> Flags for dirty instances </summary>
+		enum class DirtyInstanceFlags : uint32_t;
+
+		/// <summary> Information about per-instance dirty state </summary>
+		struct DirtyInstanceInfo;
+
 		/// <summary> Details about rendered geometry </summary>
 		struct GeometryDescriptor;
 
@@ -183,6 +189,53 @@ namespace Jimara {
 		uint32_t liveInstanceEntryCount = 0u;
 	};
 
+	/// <summary> Flags for dirty instances </summary>
+	enum class GraphicsObjectDescriptor::DirtyInstanceFlags : uint32_t {
+		/// <summary> Empty bitmask </summary>
+		NONE = 0u,
+
+		/// <summary> 
+		/// Vertex positions have been tweaked (All instances will be effected if vertexPositions.perInstanceStride is 0). 
+		/// <para/> Notes:
+		/// <para/>		0. If GeometryFlags::VERTEX_POSITION_CONSTANT is not provided, no need to provide this information;
+		/// <para/>		1. If Vertex Buffer and/or layout changes, this condition is assumed automatically and there is no need to provide this information; 
+		/// <para/>		2. This will generally mean that, for example, when building the acceleration structures, the refit is suffitient, unless a stronger flag overrides it;
+		/// <para/>		3. All instances will be effected if vertexPositions.perInstanceStride is 0.
+		/// </summary>
+		VERTEX_POSITIONS_TWEAKED = 1u << 0,
+
+		/// <summary> 
+		/// Vertex positions have been altered enough to represent different geometry.
+		/// <para/> Notes: 
+		/// <para/>		0. If GeometryFlags::VERTEX_POSITION_CONSTANT is not provided, no need to provide this information;
+		/// <para/>		1. If Vertex Buffer and/or layout changes, this condition is assumed automatically and there is no need to provide this information; 
+		/// <para/>		2. This will generally mean that, for example, when building the acceleration structures, the refit is not suffitient enough;
+		/// <para/>		3. All instances will be effected if vertexPositions.perInstanceStride is 0.
+		/// </summary>
+		VERTEX_GEOMETRY_DIRTY = 1 << 1u,
+
+		/// <summary>
+		/// Index buffer contents have been altered.
+		/// <para/>	Note: Only relevant, if the buffer and layout have stayed the same, but the content of the index buffer has been altered.
+		/// </summary>
+		INDEX_BUFFER_DIRTY = 1u << 2u
+	};
+
+	// Boolean operations for DirtyInstanceFlags:
+	JIMARA_DEFINE_ENUMERATION_BOOLEAN_OPERATIONS(GraphicsObjectDescriptor::DirtyInstanceFlags);
+
+	/// <summary> Information about per-instance dirty state </summary>
+	struct GraphicsObjectDescriptor::DirtyInstanceInfo {
+		/// <summary> Special value, which, when applied to instanceId, will mean that all instances are effected bu given flags. </summary>
+		static const constexpr uint32_t ALL_INSTANCES = ~uint32_t(0u);
+
+		/// <summary> Instance index </summary>
+		uint32_t instanceId = 0u;
+
+		/// <summary> Flags for given instance (some flags may automatically effect all instances, if the effected field is not instance-specific). </summary>
+		DirtyInstanceFlags flags = DirtyInstanceFlags::NONE;
+	};
+
 	/// <summary> Details about rendered geometry </summary>
 	struct GraphicsObjectDescriptor::GeometryDescriptor {
 		/// <summary> Vertex position buffer (JM_VertexPosition; Always storing a Vector3/vec3 data) </summary>
@@ -214,6 +267,12 @@ namespace Jimara {
 
 		/// <summary> Flags for additional controls </summary>
 		GeometryFlags flags = GeometryFlags::NONE;
+
+		/// <summary> Number of entries within dirtyInstances. </summary>
+		uint32_t dirtyInstanceCount = 0u;
+
+		/// <summary> Dirty instance records, for providing [mostly optional] per-instance information that the flags would not cover with enough granularity. </summary>
+		DirtyInstanceInfo* dirtyInstances = nullptr;
 	};
 
 
