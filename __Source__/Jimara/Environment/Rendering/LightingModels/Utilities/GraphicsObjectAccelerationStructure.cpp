@@ -240,6 +240,9 @@ namespace Jimara {
 				std::swap(m_oldBlasInstances, m_blasInstances);
 				m_blasInstances.clear();
 
+				// Create common 'dirty-blas-list':
+				SceneAccelerationStructures::DirtyQueue dirtyBlasQueue(m_blasProvider);
+
 				for (size_t i = 0u; i < objectSet.Size(); i++) {
 					const GraphicsObjectData& data = objectSet[i];
 					GraphicsObjectGeometry& object = m_objectGeometry[i];
@@ -253,6 +256,8 @@ namespace Jimara {
 
 					// Extract geometry:
 					GraphicsObjectDescriptor::GeometryDescriptor geometry = {};
+					assert(geometry.dirtyInstanceCount <= 0u);
+					assert(geometry.dirtyInstances == nullptr);
 					object.viewportData->GetGeometry(geometry);
 					object.geometry = geometry;
 					const size_t blasCount =
@@ -285,12 +290,10 @@ namespace Jimara {
 								? decltype(blasDesc.flags)::NONE
 								: decltype(blasDesc.flags)::PREVENT_DUPLICATE_ANY_HIT_INVOCATIONS) |
 							(((geometry.flags & decltype(geometry.flags)::VERTEX_POSITION_CONSTANT) != decltype(geometry.flags)::NONE)
-								? decltype(blasDesc.flags)::NONE
+								? decltype(blasDesc.flags)::REFIT_ON_REBUILD
 								: (decltype(blasDesc.flags)::REBUILD_ON_EACH_FRAME |
 									decltype(blasDesc.flags)::PREFER_FAST_BUILD |
 									decltype(blasDesc.flags)::REFIT_ON_REBUILD));
-						// __TODO__: We need refit in general, but it's a bit unsafe now...
-						//blasDesc.flags &= ~decltype(blasDesc.flags)::REFIT_ON_REBUILD;
 						blasDesc.displacementJob = Unused<Graphics::CommandBuffer*, uint64_t>;
 						blasDesc.displacementJobId = 0u;
 					}
@@ -348,6 +351,30 @@ namespace Jimara {
 						// If blas-descriptor is kept, we can just copy the content:
 						else for (size_t i = 0u; i < object.blasRange.blasCount; i++)
 							m_blasInstances.push_back(m_oldBlasInstances[object.oldBlasRange.firstBlas + i]);
+
+						// If we have dirty-entries, we should submit those to dirty-queue:
+						if (geometry.dirtyInstanceCount > 0u && geometry.dirtyInstances != nullptr)
+							for (size_t i = 0u; i < geometry.dirtyInstanceCount; i++) {
+								const GraphicsObjectDescriptor::DirtyInstanceInfo& info = geometry.dirtyInstances[i];
+								using DirtyFlags = GraphicsObjectDescriptor::DirtyInstanceFlags;
+								using DirtyType = SceneAccelerationStructures::DirtyType;
+								const DirtyType dirtyType =
+									((info.flags & (DirtyFlags::VERTEX_GEOMETRY_DIRTY | DirtyFlags::INDEX_BUFFER_DIRTY)) != DirtyFlags::NONE) ? DirtyType::NEEDS_REBUILD :
+									((info.flags & DirtyFlags::VERTEX_POSITIONS_TWEAKED) != DirtyFlags::NONE) ? DirtyType::NEEDS_REFIT :
+									DirtyType::NONE;
+								if (dirtyType == DirtyType::NONE)
+									continue;
+								auto applyTo = [&](size_t blasIndex) {
+									dirtyBlasQueue.Submit(m_blasInstances[object.blasRange.firstBlas + blasIndex], dirtyType);
+								};
+								if (info.instanceId >= object.blasRange.blasCount ||
+									geometry.vertexPositions.perInstanceStride <= 0u) {
+									assert(geometry.vertexPositions.perInstanceStride > 0u || object.blasRange.blasCount <= 1u);
+									for (size_t j = 0u; j < object.blasRange.blasCount; j++)
+										applyTo(j);
+								}
+								else applyTo(info.instanceId);
+							}
 					}
 				}
 
