@@ -1,6 +1,6 @@
 #pragma once
 #include "../../../Scene/Scene.h"
-#define JIMARA_SceneAccelerationStructures_ENABLE_BlasVariant false
+#define JIMARA_SceneAccelerationStructures_ENABLE_BlasVariant true
 #define JIMARA_SceneAccelerationStructures_ENABLE_DirtyQueue true
 
 namespace Jimara {
@@ -150,11 +150,16 @@ namespace Jimara {
 		struct JIMARA_API VariantDesc {
 			/// <summary> 
 			/// Base blas instance to refit from.
-			/// <para/> BLAS variants can be used to efficiently create multiple deformations of the same basic shape, defined by baseBlas;
-			/// <para/> Also useful, when you might have an 'unstable' vertexBuffer with a known-good base shape;
-			/// <para/> If the variant is not configured to update on each frame using the same baseBlas as refit-source, 
+			/// <para/> Notes:
+			/// <para/>		0. BLAS variants can be used to efficiently create multiple deformations of the same basic shape, defined by baseBlas;
+			/// <para/> 	1. Also useful, when you might have an 'unstable' vertexBuffer with a known-good base shape;
+			/// <para/> 	2. If the variant is not configured to update on each frame using the same baseBlas as refit-source, 
 			/// the system will take a limited amount of effort to keep the BLAS instance alive for only as long as strictly necessary.
 			/// If a longer lifecycle is required for the baseBlas, that should be made sure of externally.
+			/// <para/> 	3. Base Blas is not supposed to be a variant itself; For the sake of simplicity, we are not keeping track of indefinite depth of dependencies.
+			/// <para/> 	4. When caching, the base-blas will be largely ignored, so if we have multiple variants that have all properties matching, 
+			/// including the base blas index buffer, all strides, counts and all types/flags, 
+			/// the caching will not take the baseBlas into consideration and will return one shared instance.
 			/// </summary>
 			Reference<Blas> baseBlas;
 
@@ -188,7 +193,8 @@ namespace Jimara {
 		/// <summary>
 		/// Creates or retrieves shared instance of a 'BLAS-variant' acceleration structure by refitting a base-blas.
 		/// <para/> If instance is not new, there is no guarantte the derived BLAS will be re-fitted again from the potentially updated baseBlas. 
-		/// That will only hold water if REBUILD_ON_EACH_FRAME flag is present;
+		/// That will only hold water if REBUILD_ON_EACH_FRAME flag is present, or the result is added to the dirty-queue by hand;
+		/// <para/> Base Blas is not supposed to be a variant itself; For the sake of simplicity, we are not keeping track of indefinite depth of dependencies.
 		/// </summary>
 		/// <param name="desc"> Blas variant descriptor </param>
 		/// <returns> Blas variant instance </returns>
@@ -251,6 +257,7 @@ namespace Jimara {
 		private:
 			const Reference<SceneAccelerationStructures> m_set;
 			std::vector<Reference<const Object>> m_queue;
+			std::vector<Reference<const Object>> m_variantQueue;
 		};
 #endif
 
